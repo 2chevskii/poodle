@@ -10,5 +10,6 @@
     <File Path="global.json" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/Poodle.Cli/Poodle.Cli.csproj" />
   </Folder>
 </Solution>
