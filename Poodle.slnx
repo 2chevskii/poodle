@@ -10,6 +10,5 @@
     <File Path="global.json" />
   </Folder>
   <Folder Name="/src/">
-    <Project Path="src/Project/Project.csproj" />
   </Folder>
 </Solution>
