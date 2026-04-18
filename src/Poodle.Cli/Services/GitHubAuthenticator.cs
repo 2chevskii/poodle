@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Octokit;
@@ -33,22 +32,22 @@ internal sealed class GitHubAuthenticator
         var client = CreateClient();
         var storedToken = await LoadStoredTokenAsync(cancellationToken);
 
-        if (!string.IsNullOrWhiteSpace(storedToken?.RefreshToken))
+        if (!string.IsNullOrWhiteSpace(storedToken?.AccessToken))
         {
-            _console.MarkupLine("[blue]Using stored refresh token to authenticate with GitHub...[/]");
-            var refreshed = await TryRefreshAccessTokenAsync(storedToken.RefreshToken!, cancellationToken);
-            if (refreshed is not null)
+            _console.MarkupLine("[blue]Using stored access token to authenticate with GitHub...[/]");
+            var reusedAccessToken = await TryReuseAccessTokenAsync(client, storedToken.AccessToken!);
+            if (reusedAccessToken is not null)
             {
-                var session = await CreateSessionAsync(client, refreshed);
-                await SaveTokenAsync(refreshed, cancellationToken);
+                var session = await CreateSessionAsync(client, reusedAccessToken);
+                await SaveTokenAsync(reusedAccessToken, cancellationToken);
                 return session;
             }
 
-            _console.MarkupLine("[yellow]Stored refresh token could not be used. Falling back to device flow.[/]");
+            _console.MarkupLine("[yellow]Stored access token could not be used. Falling back to device flow.[/]");
         }
         else
         {
-            _console.MarkupLine("[blue]No stored refresh token found. Starting GitHub device flow...[/]");
+            _console.MarkupLine("[blue]No stored GitHub credentials found. Starting GitHub device flow...[/]");
         }
 
         var token = await RunDeviceFlowAsync(client, cancellationToken);
@@ -107,35 +106,28 @@ internal sealed class GitHubAuthenticator
         return TokenExchangeResponse.FromOauthToken(token);
     }
 
-    private async Task<TokenExchangeResponse?> TryRefreshAccessTokenAsync(
-        string refreshToken,
-        CancellationToken cancellationToken)
+    private async Task<TokenExchangeResponse?> TryReuseAccessTokenAsync(
+        GitHubClient client,
+        string accessToken)
     {
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("poodle");
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://github.com/login/oauth/access_token")
+        try
         {
-            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            client.Credentials = new Credentials(accessToken);
+            await client.User.Current();
+
+            return new TokenExchangeResponse
             {
-                ["client_id"] = ClientId,
-                ["grant_type"] = "refresh_token",
-                ["refresh_token"] = refreshToken
-            })
-        };
-
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
-        var token = JsonSerializer.Deserialize<TokenExchangeResponse>(payload, JsonOptions);
-
-        if (!response.IsSuccessStatusCode || token is null || string.IsNullOrWhiteSpace(token.AccessToken))
+                AccessToken = accessToken
+            };
+        }
+        catch (AuthorizationException)
         {
             return null;
         }
-
-        return token;
+        catch (ApiException)
+        {
+            return null;
+        }
     }
 
     private async Task<StoredToken?> LoadStoredTokenAsync(CancellationToken cancellationToken)
@@ -163,15 +155,13 @@ internal sealed class GitHubAuthenticator
         var storedToken = new StoredToken
         {
             AccessToken = token.AccessToken,
-            RefreshToken = token.RefreshToken,
-            AccessTokenExpiresAtUtc = token.ExpiresIn > 0 ? now.AddSeconds(token.ExpiresIn) : null,
-            RefreshTokenExpiresAtUtc = token.RefreshTokenExpiresIn > 0 ? now.AddSeconds(token.RefreshTokenExpiresIn) : null
+            AccessTokenExpiresAtUtc = token.ExpiresIn > 0 ? now.AddSeconds(token.ExpiresIn) : null
         };
 
         await using var stream = File.Create(_tokenFilePath);
         await JsonSerializer.SerializeAsync(stream, storedToken, JsonOptions, cancellationToken);
 
-        _console.MarkupLine($"[green]Saved refresh token to[/] [grey]{Markup.Escape(_tokenFilePath)}[/].");
+        _console.MarkupLine($"[green]Saved GitHub credentials to[/] [grey]{Markup.Escape(_tokenFilePath)}[/].");
     }
 
     private void TryOpenBrowser(string verificationUri)
@@ -196,11 +186,7 @@ internal sealed class GitHubAuthenticator
     {
         public string? AccessToken { get; set; }
 
-        public string? RefreshToken { get; set; }
-
         public DateTimeOffset? AccessTokenExpiresAtUtc { get; set; }
-
-        public DateTimeOffset? RefreshTokenExpiresAtUtc { get; set; }
     }
 
     private sealed class TokenExchangeResponse
@@ -210,12 +196,6 @@ internal sealed class GitHubAuthenticator
 
         [JsonPropertyName("expires_in")]
         public int ExpiresIn { get; set; }
-
-        [JsonPropertyName("refresh_token")]
-        public string RefreshToken { get; set; } = string.Empty;
-
-        [JsonPropertyName("refresh_token_expires_in")]
-        public int RefreshTokenExpiresIn { get; set; }
 
         [JsonPropertyName("error")]
         public string? Error { get; set; }
@@ -229,8 +209,6 @@ internal sealed class GitHubAuthenticator
             {
                 AccessToken = token.AccessToken,
                 ExpiresIn = token.ExpiresIn,
-                RefreshToken = token.RefreshToken,
-                RefreshTokenExpiresIn = token.RefreshTokenExpiresIn,
                 Error = token.Error,
                 ErrorDescription = token.ErrorDescription
             };

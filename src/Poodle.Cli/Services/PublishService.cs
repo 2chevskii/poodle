@@ -53,7 +53,7 @@ internal sealed class PublishService
         using var repository = workspace.Repository;
 
         var authenticatedClient = await _gitHubAuthenticator.AuthenticateAsync(cancellationToken);
-        var repositoryTarget = ResolveRepositoryTarget(workspace.Config, authenticatedClient.User.Login);
+        var repositoryTarget = ResolveRepositoryTarget(workspace, authenticatedClient.User.Login);
         var remoteContext = await EnsureRemoteRepositoryAsync(
             repository,
             repositoryTarget,
@@ -113,12 +113,23 @@ internal sealed class PublishService
         _console.MarkupLine($"[blue]Publishing branch:[/] [bold]{Markup.Escape(branchName)}[/]");
         _console.MarkupLine($"[blue]Publishing content root:[/] [grey]{Markup.Escape(contentRoot)}[/]");
 
-        return new PublishWorkspace(config, repository, repositoryRoot, branchName, contentRoot, artifactPath);
+        return new PublishWorkspace(workingDirectory, config, repository, repositoryRoot, branchName, contentRoot, artifactPath);
     }
 
-    private RepositoryTarget ResolveRepositoryTarget(PoodleConfig? config, string defaultOwner)
+    private RepositoryTarget ResolveRepositoryTarget(PublishWorkspace workspace, string defaultOwner)
     {
-        var repositoryInput = config?.Repository ?? PromptForRepositoryName();
+        var repositoryInput = workspace.Config?.Repository;
+        if (string.IsNullOrWhiteSpace(repositoryInput))
+        {
+            repositoryInput = PromptForRepositoryName();
+
+            var config = workspace.Config ?? new PoodleConfig();
+            config.Repository = repositoryInput;
+            config.Save(workspace.WorkingDirectory);
+
+            _console.MarkupLine("[green]Saved repository name to[/] [grey].poodle.json[/].");
+        }
+
         var repositoryTarget = RepositoryTarget.Parse(repositoryInput, defaultOwner);
         _console.MarkupLine($"[blue]Target repository:[/] [bold]{Markup.Escape(repositoryTarget.FullName)}[/]");
         return repositoryTarget;
@@ -319,6 +330,7 @@ internal sealed class PublishService
     }
 
     private sealed record PublishWorkspace(
+        string WorkingDirectory,
         PoodleConfig? Config,
         GitRepository Repository,
         string RepositoryRoot,
